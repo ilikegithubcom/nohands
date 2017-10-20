@@ -68,6 +68,13 @@ namespace libhfp {
 #define SDP_ATTR_SUPPORTED_FEATURES SDP_SUPPORTED_FEATURES
 #endif
 
+// inquiry result type
+typedef enum{
+  inq_result_default = 0,
+  inq_result_rssi,
+  inq_result_externed  
+}e_inq_result_type;
+
 int SdpAsyncTaskHandler::
 SdpLookupChannel(SdpTaskParams &htp)
 {
@@ -426,15 +433,20 @@ HciDataReadyNot(SocketNotifier *notp, int fh)
 	HciTask *taskp;
 	inquiry_info *infop = 0;
 	inquiry_info_with_rssi *rssip = 0;
+	extended_inquiry_info *exinfop = 0;
 	uint8_t count = 0;
 	ssize_t ret;
-	bool inq_result_rssi = false;
+	e_inq_result_type inq_result_type = inq_result_default;
 	ErrorInfo error;
 
 	assert(fh == m_hci_fh);
 	assert(notp == m_hci_not);
 
 	ret = read(m_hci_fh, evbuf, sizeof(evbuf));
+// 	GetDi()->LogDebug("evbuf: ");
+// 	for(int i = 0; i < sizeof(evbuf); i++){
+// 	  GetDi()->LogDebug("0x%02x ", evbuf[i]);
+// 	}
 	if (ret < 0) {
 		if ((errno == EAGAIN) ||
 		    (errno == EINTR) ||
@@ -460,8 +472,10 @@ HciDataReadyNot(SocketNotifier *notp, int fh)
 		return;
 	}
 
-	if (evbuf[0] != HCI_EVENT_PKT)
+	if (evbuf[0] != HCI_EVENT_PKT){
+// 	  GetDi()->LogDebug("if ((errno == EAGAIN) || evbuf[0]: %d", evbuf[0]);
 		return;
+	}
 
 	if (ret < (1 + HCI_EVENT_HDR_SIZE)) {
 		GetDi()->LogError(&error,
@@ -550,24 +564,30 @@ HciDataReadyNot(SocketNotifier *notp, int fh)
 		countp = (uint8_t *) (hdr + 1);
 		infop = (inquiry_info *) (countp + 1);
 		ret = 1;
-		if (hdr->plen < ret)
+		if (hdr->plen < ret){
+// 		  GetDi()->LogDebug("if (hdr->plen < ret){");
 			goto invalid_struct;
+		}
 		count = *countp;
 		ret = 1 + (count * sizeof(*infop));
-		if (hdr->plen != ret)
+		if (hdr->plen != ret){
+// 		  GetDi()->LogDebug("if (hdr->plen != ret){");
 			goto invalid_struct;
+		}
 
-		inq_result_rssi = false;
-
-	do_next_inq:
+		inq_result_type = inq_result_default;
+// GetDi()->LogDebug("case EVT_INQUIRY_RESULT: %d", count);
+	do_next_inq_default:
 		if (!count)
 			break;
 		listp = m_hci_tasks.next;
 		while (listp != &m_hci_tasks) {
+// 		  GetDi()->LogDebug("while (listp != &m_hci_tasks) {");
 			taskp = GetContainer(listp, HciTask, m_hcit_links);
 			listp = listp->next;
 
 			if (taskp->m_tasktype == HciTask::HT_INQUIRY) {
+// 		  GetDi()->LogDebug("if (taskp->m_tasktype == HciTask::HT_INQUIRY) {");
 				taskp->m_complete = false;
 				bacpy(&taskp->m_bdaddr, &infop->bdaddr);
 				taskp->m_pscan = infop->pscan_mode;
@@ -588,15 +608,19 @@ HciDataReadyNot(SocketNotifier *notp, int fh)
 		countp = (uint8_t *) (hdr + 1);
 		rssip = (inquiry_info_with_rssi *) (countp + 1);
 		ret = 1;
-		if (hdr->plen < ret)
+		if (hdr->plen < ret){
+// 		  GetDi()->LogDebug("if (hdr->plen < ret){");
 			goto invalid_struct;
+		}
 		count = *countp;
 		ret = 1 + (count * sizeof(*rssip));
-		if (hdr->plen != ret)
+		if (hdr->plen != ret){
+// 		  GetDi()->LogDebug("if (hdr->plen != ret){");
 			goto invalid_struct;
+		}
 
-		inq_result_rssi = true;
-
+		inq_result_type = inq_result_rssi;
+// GetDi()->LogDebug("case EVT_INQUIRY_RESULT_WITH_RSSI: %d", count);
 	do_next_inq_rssi:
 		if (!count)
 			break;
@@ -619,6 +643,50 @@ HciDataReadyNot(SocketNotifier *notp, int fh)
 			}
 		}
 		break;
+	}
+	case EVT_EXTENDED_INQUIRY_RESULT: {
+		uint8_t *countp;
+		countp = (uint8_t *) (hdr + 1);
+		exinfop = (extended_inquiry_info *) (countp + 1);
+		ret = 1;
+		if (hdr->plen < ret){
+// 		  GetDi()->LogDebug("if (hdr->plen < ret){");
+			goto invalid_struct;
+		}
+		count = *countp;
+		ret = 1 + (count * sizeof(*exinfop));
+		if (hdr->plen != ret){
+// 		  GetDi()->LogDebug("if (hdr->plen != ret){");
+			goto invalid_struct;
+		}
+
+		inq_result_type = inq_result_externed;
+// GetDi()->LogDebug("case EVT_EXTENDED_INQUIRY_RESULT: %d", count);
+	do_next_inq_extended:
+		if (!count)
+			break;
+		listp = m_hci_tasks.next;
+		while (listp != &m_hci_tasks) {
+// 		  GetDi()->LogDebug("while (listp != &m_hci_tasks) {");
+			taskp = GetContainer(listp, HciTask, m_hcit_links);
+			listp = listp->next;
+
+			if (taskp->m_tasktype == HciTask::HT_INQUIRY) {
+// 		  GetDi()->LogDebug("if (taskp->m_tasktype == HciTask::HT_INQUIRY) {");
+				taskp->m_complete = false;
+				bacpy(&taskp->m_bdaddr, &exinfop->bdaddr);
+				taskp->m_pscan = 0;//exinfop->pscan_mode;
+				taskp->m_pscan_rep = exinfop->pscan_rep_mode;
+				taskp->m_clkoff = exinfop->clock_offset;
+				taskp->m_devclass =
+					(exinfop->dev_class[2] << 16) |
+					(exinfop->dev_class[1] << 8) |
+					exinfop->dev_class[0];
+				taskp->m_hcit_links.UnlinkOnly();
+				tasks_done.AppendItem(taskp->m_hcit_links);
+			}
+		}
+	  break;
 	}
 	case EVT_INQUIRY_COMPLETE: {
 		uint8_t st;
@@ -688,12 +756,28 @@ HciDataReadyNot(SocketNotifier *notp, int fh)
 	}
 
 	if (count--) {
-		if (inq_result_rssi) {
-			rssip++;
-			goto do_next_inq_rssi;
-		}
-		infop++;
-		goto do_next_inq;
+	  switch(inq_result_type){
+	    case inq_result_default:
+	    {
+	      infop++;
+	      goto do_next_inq_default;
+	      break;
+	    }
+	    case inq_result_rssi:
+	    {
+	      rssip++;
+	      goto do_next_inq_rssi;
+	      break;
+	    }
+	    default:
+	    {
+	      exinfop++;
+	      goto do_next_inq_extended;
+	      break;
+	    }
+	    
+	  }
+
 	}
 
 	return;
@@ -706,7 +790,6 @@ invalid_struct:
 			  hdr->plen, ret);
 	GetHub()->InvoluntaryStop(&error);
 }
-
 
 bool BtHci::
 HciSend(int fh, HciTask *taskp, void *data, size_t len, ErrorInfo *error)
@@ -735,7 +818,12 @@ HciSend(int fh, HciTask *taskp, void *data, size_t len, ErrorInfo *error)
 	GetDi()->LogDebug("HCI Submit 0x%04x", hdrp->opcode);
 
 	while (1) {
-		ret = send(fh, buf, expect, MSG_NOSIGNAL);
+	  //>>>>>send>>>>>//
+// 	  for(int i = 0; i < expect; i++){
+// 	    GetDi()->LogDebug("0x%x ",buf[i]); 
+// 	  }
+	  ret = send(fh, buf, expect, MSG_NOSIGNAL);
+	  //<<<<<send<<<<<//
 		if ((ret < 0) &&
 		    ((errno == EAGAIN) ||
 		     (errno == EINTR) ||
@@ -859,6 +947,7 @@ HciInit(int hci_id, ErrorInfo *error)
 	hci_filter_set_event(EVT_CMD_STATUS, &flt);
 	hci_filter_set_event(EVT_INQUIRY_RESULT, &flt);
 	hci_filter_set_event(EVT_INQUIRY_RESULT_WITH_RSSI, &flt);
+	hci_filter_set_event(EVT_EXTENDED_INQUIRY_RESULT, &flt);
 	hci_filter_set_event(EVT_INQUIRY_COMPLETE, &flt);
 	hci_filter_set_event(EVT_REMOTE_NAME_REQ_COMPLETE, &flt);
 
